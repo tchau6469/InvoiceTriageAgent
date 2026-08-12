@@ -1,0 +1,14 @@
+budget_period,category,cost_center,budget_amount,committed_before_fixture_invoices,currency,owner
+2026-07,cloud_software,TECH-OPS,12500.00,6100.00,USD,Director of Technology Operations
+2026-07,cloud_software,SECURITY,10000.00,4350.00,USD,Chief Information Security Officer
+2026-07,cloud_software,DATA-PLATFORM,8000.00,2425.00,USD,Director of Data Platform
+2026-07,office_supplies,CORP-ADMIN,7500.00,3150.00,USD,Corporate Administration Manager
+2026-07,office_supplies,WORKPLACE,10000.00,4200.00,USD,Workplace Director
+2026-07,facilities_maintenance,FACILITIES,12500.00,5000.00,USD,Facilities Director
+2026-07,professional_services,TECH-PROJECTS,5000.00,0.00,USD,Technology PMO Director
+2026-07,professional_services,LEGAL,14000.00,7200.00,USD,General Counsel
+2026-07,professional_services,FINANCE,18000.00,8000.00,USD,Controller
+2026-07,logistics_freight,OPERATIONS,9000.00,3900.00,USD,Operations Director
+2026-07,logistics_freight,LOGISTICS,12000.00,5100.00,USD,Logistics Director
+2026-07,marketing_events,MARKETING,18000.00,9500.00,USD,Marketing Director
+2026-07,marketing_events,EVENTS,15000.00,5400.00,USD,Events Director

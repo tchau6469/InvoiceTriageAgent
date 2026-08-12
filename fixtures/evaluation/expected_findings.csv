@@ -1,0 +1,21 @@
+invoice_id,expected_outcome,expected_flags,related_invoice_id,expected_vendor_id,notes
+INV-2026-0001,review_clear,,,VND-1001,Contract-rate base subscription
+INV-2026-0002,review_clear,,,VND-1002,Contract-rate monthly monitoring
+INV-2026-0003,review_clear,,,VND-1003,June platform subscription with correct cost center
+INV-2026-0004,review_clear,,,VND-1004,Rate-card goods below PO threshold
+INV-2026-0005,review_clear,,,VND-1007,Authorized recurring site service
+INV-2026-0006,review_clear,,,VND-1008,Contracted quarterly maintenance on standing PO
+INV-2026-0007,review_clear,,,VND-1011,Itemized legal services below monthly cap
+INV-2026-0008,review_clear,,,VND-1012,Contracted monthly retainer
+INV-2026-0009,review_clear,,,VND-1014,Contracted Chicago-to-Minneapolis lane
+INV-2026-0010,review_clear,,,VND-1013,Local courier with allowed rush premium
+INV-2026-0011,review_clear,,,VND-1016,Monthly creative retainer
+INV-2026-0012,review_clear,,,VND-1018,Authorized event within EVENTS budget
+INV-2026-0013,manual_review,duplicate_invoice,INV-2026-0001,VND-1001,Same vendor invoice number amount and service period
+INV-2026-0014,manual_review,duplicate_invoice,INV-2026-0005,VND-1007,Same vendor invoice number site amount and service period
+INV-2026-0015,manual_review,duplicate_shipment,INV-2026-0009,VND-1014,Different invoice number but repeated bill of lading
+INV-2026-0016,manual_review,inactive_vendor|expired_contract|post_termination_charge,,VND-1010,New 2026 work billed against a 2025 completed engagement
+INV-2026-0017,manual_review,missing_required_po,,VND-1006,Furniture contract requires a PO for every order
+INV-2026-0018,manual_review,budget_cost_center_mismatch,,VND-1003,MARKETING conflicts with approved DATA-PLATFORM coding
+INV-2026-0019,manual_review,budget_exceeded,,VND-1007,Valid charge raises July facilities total from 11400 to 12850 against a 12500 budget
+INV-2026-0020,manual_review,contract_rate_exceeded,,VND-1014,Chicago-to-Detroit load billed at 1650 instead of 1450
