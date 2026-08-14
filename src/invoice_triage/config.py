@@ -31,8 +31,10 @@ class AppSettings(BaseModel):
     database_url: SecretStr = SecretStr(
         "postgresql://invoice_triage:invoice_triage@localhost:5432/invoice_triage"
     )
-    embedding_model_id: str = "not-configured"
+    embedding_model_id: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dimensions: int = Field(default=1024, gt=0)
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = Field(default=8, ge=1, le=256)
     retrieval_top_k: int = Field(default=5, ge=1, le=100)
     vector_candidates: int = Field(default=20, ge=1, le=1000)
     keyword_candidates: int = Field(default=20, ge=1, le=1000)
@@ -47,6 +49,8 @@ class AppSettings(BaseModel):
             "database_url": "DATABASE_URL",
             "embedding_model_id": "EMBEDDING_MODEL_ID",
             "embedding_dimensions": "EMBEDDING_DIMENSIONS",
+            "embedding_device": "EMBEDDING_DEVICE",
+            "embedding_batch_size": "EMBEDDING_BATCH_SIZE",
             "retrieval_top_k": "RETRIEVAL_TOP_K",
             "vector_candidates": "VECTOR_CANDIDATES",
             "keyword_candidates": "KEYWORD_CANDIDATES",

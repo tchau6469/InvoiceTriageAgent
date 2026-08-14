@@ -14,6 +14,7 @@ from invoice_triage.domain import (
     DocumentType,
     Invoice,
     InvoiceLine,
+    MonthlyBudget,
     PaymentTerms,
     RetrievalQuery,
     SearchResult,
@@ -150,6 +151,30 @@ def test_invoice_rejects_empty_lines() -> None:
             currency="USD",
             total_due="0.00",
             lines=(),
+        )
+
+
+def test_monthly_budget_requires_first_of_month_and_valid_commitment() -> None:
+    with pytest.raises(ValidationError, match="first day"):
+        MonthlyBudget(
+            budget_period=date(2026, 7, 2),
+            category=VendorCategory.FACILITIES_MAINTENANCE,
+            cost_center="FACILITIES",
+            budget_amount="100.00",
+            committed_amount="50.00",
+            currency="USD",
+            owner="Facilities Director",
+        )
+
+    with pytest.raises(ValidationError, match="cannot exceed"):
+        MonthlyBudget(
+            budget_period=date(2026, 7, 1),
+            category=VendorCategory.FACILITIES_MAINTENANCE,
+            cost_center="FACILITIES",
+            budget_amount="100.00",
+            committed_amount="101.00",
+            currency="USD",
+            owner="Facilities Director",
         )
 
 

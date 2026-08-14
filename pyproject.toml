@@ -13,12 +13,17 @@ dependencies = [
     "pgvector>=0.4,<0.5",
     "pydantic>=2.12,<3",
     "psycopg[binary,pool]>=3.3,<3.4",
+    "PyYAML>=6.0,<7",
     "SQLAlchemy>=2.0,<2.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=9,<10",
+]
+embeddings = [
+    "sentence-transformers>=5.1,<6",
+    "transformers>=4.51,<6",
 ]
 
 [tool.setuptools.packages.find]

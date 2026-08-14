@@ -11,10 +11,11 @@ evaluation labels live under `fixtures/`.
 
 ## Current milestone
 
-Step 1 establishes the Python package, strict Pydantic domain contracts, and
-unit tests. PostgreSQL, document parsing, embeddings, retrieval, MCP tools,
-LangGraph orchestration, AWS deployment, and the review dashboard are later
-milestones.
+The database foundation, structured vendor/budget loader, and RAG document
+ingestion pipeline are complete. The 24 contract and policy Markdown sources
+produce 195 heading-aware chunks embedded by Qwen3-Embedding-0.6B and stored in
+PostgreSQL with pgvector and generated full-text vectors. Hybrid retrieval is
+the next milestone.
 
 ## Local validation
 
@@ -25,6 +26,12 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 python -m pytest
+```
+
+Local Qwen inference additionally requires the optional embedding dependencies:
+
+```bash
+python -m pip install -e ".[embeddings]"
 ```
 
 Host-side tests skip the PostgreSQL integration suite unless explicitly
@@ -64,6 +71,30 @@ integration tests. To apply migrations without running the test suite:
 ```bash
 docker compose --profile tools run --rm migrate
 ```
+
+Load or refresh the structured vendor and budget fixtures with:
+
+```bash
+docker compose --profile tools run --rm load-fixtures
+```
+
+The loader validates both complete CSV files before opening a transaction, then
+upserts vendors and budgets atomically. It is safe to run repeatedly: vendor IDs
+and monthly budget business keys are updated rather than duplicated.
+
+Parse, chunk, embed, and upsert the 18 contracts and 6 policies with:
+
+```bash
+docker compose --profile tools run --build --rm ingest-documents
+```
+
+The ingestion image installs CPU-only PyTorch and runs as a non-root user. The
+first invocation downloads the public Qwen model into the persistent
+`huggingface-cache` volume; subsequent invocations reuse it. No Hugging Face API
+key is required for this public model, though anonymous Hub rate limits apply.
+The pipeline deliberately discovers only `fixtures/contracts/` and
+`fixtures/policies/`; invoices and evaluation labels cannot enter the retrieval
+index through this command.
 
 The database layer uses synchronous Psycopg 3 connections with a small
 connection pool. Alembic is used only for schema versioning; migrations contain

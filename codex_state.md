@@ -1,6 +1,6 @@
 # Invoice Triage Agent — Codex Project State
 
-Last updated: 2026-08-12  
+Last updated: 2026-08-14
 Repository: `/home/tchau/InvoiceTriageAgent`
 
 This file is a durable handoff for continuing the project after conversation
@@ -104,6 +104,26 @@ change the current architecture.
 - Monetary values use `Decimal`
 - Dates use `date`
 - Unknown model fields are rejected
+
+### Grounding-document parsing and embeddings
+
+The user selected and confirmed `Qwen/Qwen3-Embedding-0.6B` for local document
+and query embeddings.
+
+- Output dimension: 1024, matching the existing `vector(1024)` schema
+- Local adapter: Sentence Transformers
+- Document chunks: embedded without an instruction
+- Queries: use a tailored accounts-payable retrieval instruction
+- Vectors: L2-normalized for cosine retrieval
+- Front matter: PyYAML `safe_load` with a strict allowed-field set
+- CPU is the default device
+- The optional `embeddings` dependency group keeps PyTorch out of ordinary
+  migrations, structured loading, and tests
+- The ingestion Docker target explicitly installs PyTorch from the official
+  CPU wheel index so the image does not pull CUDA libraries
+
+The deterministic SHA-256 embedder is test-only and must not be used for the
+runtime corpus.
 
 ### PostgreSQL driver
 
@@ -241,6 +261,7 @@ Implemented domain models and enums include:
 - `RetrievalQuery`
 - `SearchResult`
 - `BudgetCheck`
+- `MonthlyBudget`
 - `DocumentType`
 - `DocumentStatus`
 - `VendorStatus`
@@ -266,14 +287,12 @@ Important model behavior:
 implicitly load `.env`; Compose loads `.env`, and a host shell/runner must export
 variables when running directly on the host.
 
-The following future-stage packages exist but mostly remain scaffolds:
+The retrieval and evaluation packages remain scaffolds. Ingestion, embeddings,
+and structured/RAG repositories are implemented:
 
 ```text
-src/invoice_triage/ingestion/
-src/invoice_triage/embeddings/
 src/invoice_triage/retrieval/
 src/invoice_triage/evaluation/
-src/invoice_triage/storage/repositories.py
 ```
 
 Do not mistake their presence for completed implementations.
@@ -294,6 +313,8 @@ docker/postgres/init/001-enable-vector.sql
 - `runtime`: installs the application and copies runtime fixtures, migrations,
   and scripts. It intentionally has no final agent command yet because the
   AgentCore entrypoint has not been implemented.
+- `ingestion`: installs CPU-only PyTorch and the optional Sentence Transformers
+  dependency group, then copies the corpus, migrations, and scripts.
 - `test`: installs development dependencies, migrations, fixtures, and tests;
   its default command is pytest.
 
@@ -302,8 +323,17 @@ Compose services:
 - `postgres`: default local database service with persistent named volume and
   health check.
 - `migrate`: optional `tools` profile; applies Alembic through `head`.
+- `load-fixtures`: optional `tools` profile; applies migrations and then loads
+  structured vendor and budget fixtures transactionally.
+- `model-cache-init`: optional `tools` profile; makes the named Hugging Face
+  cache volume writable by the fixed non-root application UID.
+- `ingest-documents`: optional `tools` profile; installs the CPU-only local
+  embedding runtime, applies migrations, and ingests Qwen vectors.
 - `test`: optional `test` profile; applies migrations and then runs unit and
   live PostgreSQL integration tests.
+
+The `huggingface-cache` named volume stores public model weights across
+one-shot ingestion containers. The application UID/GID is fixed at 10001.
 
 The local user created `.env`, supplied a PostgreSQL password, started the
 database with `docker compose up -d postgres`, and verified it was running.
@@ -318,6 +348,10 @@ POSTGRES_USER=invoice_triage
 POSTGRES_PASSWORD=<secret local password>
 POSTGRES_PORT=5432
 INVOICE_TRIAGE_DATABASE_URL=postgresql://invoice_triage:<same URL-encoded password>@localhost:5432/invoice_triage
+INVOICE_TRIAGE_EMBEDDING_MODEL_ID=Qwen/Qwen3-Embedding-0.6B
+INVOICE_TRIAGE_EMBEDDING_DIMENSIONS=1024
+INVOICE_TRIAGE_EMBEDDING_DEVICE=cpu
+INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE=8
 ```
 
 No external PostgreSQL account is required for local development. The Compose
@@ -417,7 +451,12 @@ tests/unit/test_config.py
 tests/unit/test_fixture_schema_alignment.py
 tests/unit/test_models.py
 tests/unit/test_postgres.py
+tests/unit/test_document_parser.py
+tests/unit/test_document_chunker.py
+tests/unit/test_document_pipeline.py
+tests/unit/test_embeddings.py
 tests/integration/test_postgres.py
+tests/integration/test_document_repository.py
 ```
 
 The integration suite is skipped by ordinary host-side pytest unless
@@ -426,7 +465,7 @@ The integration suite is skipped by ordinary host-side pytest unless
 The last complete containerized test run passed:
 
 ```text
-25 passed
+49 passed
 ```
 
 The live integration checks verified:
@@ -439,6 +478,19 @@ The live integration checks verified:
 - HNSW vector index
 - Native vector decoding through pgvector-python
 - PostgreSQL English full-text matching
+- Structured fixture parsing and validation
+- Transactional vendor and budget upserts
+- Idempotent repeated loads
+- Vendor ID and case-insensitive alias lookup
+- Inactive-vendor preservation
+- Monthly budget lookup
+- Validation-before-write behavior for malformed fixture input
+- Strict Markdown/YAML parsing and corpus isolation
+- Stable heading-aware chunk IDs and intact Markdown tables
+- Qwen query/document prompt asymmetry
+- Live document/chunk upserts with 1024-dimensional vectors
+- Generated `tsvector` matches
+- Stale chunk deletion and safe heading reordering
 
 The first containerized run exposed two test-packaging issues that were fixed:
 
@@ -460,6 +512,18 @@ Apply outstanding migrations:
 
 ```bash
 docker compose --profile tools run --rm migrate
+```
+
+Load or refresh structured vendor and budget fixtures:
+
+```bash
+docker compose --profile tools run --rm load-fixtures
+```
+
+Build the CPU embedding runtime and ingest contracts/policies:
+
+```bash
+docker compose --profile tools run --build --rm ingest-documents
 ```
 
 Apply migrations and run all tests, including integration tests:
@@ -486,6 +550,8 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
+Install `.[embeddings]` as well only when running Qwen directly on the host.
+
 If running Alembic directly on the host, ensure
 `INVOICE_TRIAGE_DATABASE_URL` is exported because application settings do not
 parse `.env` automatically.
@@ -499,22 +565,16 @@ docker compose exec -T postgres sh -c \
 
 ## Current repository status warning
 
-At the time of this snapshot, the application scaffold and database foundation
-appear as untracked files in `git status`; they have not been committed during
-this interaction. The synthetic corpus and original spec were already tracked.
-Before major further work, review `git status` and create a normal checkpoint
-commit if desired. Do not discard untracked files.
+The earlier application scaffold and database foundation are tracked. The
+structured-loading and RAG-ingestion milestones have working-tree changes and
+new files that have not been committed during this interaction. Review
+`git status` and create a normal checkpoint commit when desired. Do not discard
+the new loaders, ingestion pipeline, or tests.
 
 ## Work not yet implemented
 
 The following are still pending:
 
-- Structured vendor CSV loader and repository
-- Structured monthly-budget CSV loader and repository
-- Markdown/YAML-front-matter parser
-- Heading-aware chunker
-- Embedding provider/client implementation
-- Chunk/document upsert repository
 - Vector-only retrieval
 - PostgreSQL lexical retrieval
 - Reciprocal Rank Fusion
@@ -531,47 +591,65 @@ The following are still pending:
 - Token/cost measurement
 - AI usage guardrails document
 
-## Recommended immediate next step
+## Structured fixture loading completed
 
-Implement structured fixture loading before RAG document parsing:
-
-1. Implement `VendorRepository` and `BudgetRepository` with explicit,
-   parameterized Psycopg SQL.
-2. Add CSV loaders for `fixtures/vendors/vendors.csv` and
-   `fixtures/budgets/monthly_budgets.csv`.
-3. Convert budget periods like `2026-07` to first-of-month PostgreSQL dates.
-4. Upsert records idempotently in transactions.
-5. Test that running the loader twice produces no duplicate records.
-6. Verify exact counts: 18 vendors and 13 budget rows.
-7. Add lookup tests for aliases, inactive status, cost center, payment terms,
-   and the facilities budget anomaly.
-
-After structured loading is reliable, implement the ingestion vertical slice:
+The structured data milestone is implemented in:
 
 ```text
-one policy Markdown file
-  -> parse YAML front matter and body
-  -> split into heading sections
-  -> retain tables and metadata
-  -> generate stable document/chunk IDs and SHA-256 hashes
-  -> temporarily use a deterministic test embedding
-  -> upsert source document and chunks
-  -> verify generated tsvector content
+src/invoice_triage/domain/models.py           MonthlyBudget model
+src/invoice_triage/storage/repositories.py    VendorRepository, BudgetRepository
+src/invoice_triage/ingestion/structured.py    CSV validation and atomic loader
+scripts/load_structured_fixtures.py            argparse CLI
 ```
 
-Then extend to all 24 RAG source documents (18 contracts + 6 policies) before
-introducing a real embedding provider.
+Behavior:
+
+- Exact CSV header validation
+- All rows validated before database access
+- Duplicate fixture business keys rejected
+- `YYYY-MM` budget periods converted to first-of-month dates
+- Parameterized Psycopg SQL
+- Vendor upsert by `vendor_id`
+- Budget upsert by period/category/cost center
+- Both datasets written in one transaction
+- Case-insensitive legal name, display name, and alias lookup
+- Idempotent repeated execution
+
+The actual CLI was run twice against the persistent local database. Final
+verified state:
+
+```text
+vendors: 18
+budgets: 13
+VND-1010 status: inactive
+VND-1010 cost center: TECH-PROJECTS
+Facilities July budget: 12500.00
+Facilities base committed amount: 5000.00
+```
+
+## Recommended immediate next step
+
+Implement and evaluate the retrieval vertical slice:
+
+```text
+retrieval query
+  -> embed with the AP-specific Qwen query instruction
+  -> pgvector cosine search with category/vendor/status filters
+  -> PostgreSQL full-text search with the same filters
+  -> compare vector-only and lexical-only results on labeled queries
+```
+
+After both retrieval branches work independently, add Reciprocal Rank Fusion
+and benchmark hybrid search before selecting a reranker.
 
 ## Decisions that still require user confirmation
 
 Before their implementation, confirm these major choices:
 
-- Exact embedding model/provider for local development and Bedrock deployment
-- Embedding dimension if different from the current schema's `vector(1024)`
+- Production hosting path for Qwen embeddings (for example SageMaker versus a
+  separately approved managed model); local inference is already settled
 - Cross-encoder reranker model and hosting method
 - Exact RRF constant and candidate counts after initial evaluation
-- Whether source YAML parsing uses PyYAML or a narrower custom parser
-- Repository/loader command interface and whether a CLI framework is warranted
 - Any move from synchronous to asynchronous database access
 
 Changing embedding dimensions requires a database migration and re-embedding
@@ -590,3 +668,49 @@ the corpus, so it must be decided before production ingestion.
   independently.
 - Report Recall@5, MRR, nDCG@5, and latency using the 30 labeled queries.
 - Maintain the invariant that the agent can recommend but never approve or pay.
+
+## RAG document ingestion completed
+
+Implemented files:
+
+```text
+src/invoice_triage/ingestion/parser.py
+src/invoice_triage/ingestion/chunker.py
+src/invoice_triage/ingestion/pipeline.py
+src/invoice_triage/embeddings/client.py
+src/invoice_triage/storage/repositories.py
+scripts/ingest_grounding_documents.py
+```
+
+Behavior:
+
+- Discovers exactly 18 contracts and 6 policies; invoices and evaluation files
+  are excluded by construction.
+- Requires YAML front matter and exactly one H1 title.
+- Creates one chunk per H2 section and an overview chunk only when pre-section
+  body text exists.
+- Preserves each short clause and Markdown table intact.
+- Produces stable `document_id:heading-slug` chunk IDs.
+- Embeds `document title + section heading + section body`.
+- Stores embedding model, dimension, and text-recipe version in chunk metadata.
+- Computes SHA-256 hashes and retains source, scope, lifecycle, and ordinal
+  provenance.
+- Validates the complete corpus and generates all embeddings before opening the
+  atomic database write transaction.
+- Safely handles deleted, renamed, and reordered sections during re-ingestion.
+
+The real ingestion command completed successfully against the persistent local
+database. Verified state:
+
+```text
+source_documents:     24
+document_chunks:     195
+missing embeddings:    0
+wrong dimensions:      0
+Qwen-provenance rows: 195
+full-text "payment terms" matches: 24
+```
+
+The public model weights are cached in the Docker `huggingface-cache` volume.
+Do not use `docker compose down --volumes` unless both the PostgreSQL data and
+downloaded model cache are intentionally being deleted.

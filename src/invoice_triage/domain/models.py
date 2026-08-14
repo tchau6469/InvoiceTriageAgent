@@ -200,6 +200,28 @@ class Vendor(DomainModel):
     remittance_profile_ref: NonEmptyString
 
 
+class MonthlyBudget(DomainModel):
+    """Authoritative monthly budget imported from a structured finance source."""
+
+    budget_period: date
+    category: VendorCategory
+    cost_center: NonEmptyString
+    budget_amount: NonNegativeDecimal
+    committed_amount: NonNegativeDecimal
+    currency: CurrencyCode
+    owner: NonEmptyString
+
+    @model_validator(mode="after")
+    def validate_budget_period_and_amounts(self) -> Self:
+        """Require a first-of-month period and internally consistent amounts."""
+
+        if self.budget_period.day != 1:
+            raise ValueError("budget_period must be the first day of a month")
+        if self.committed_amount > self.budget_amount:
+            raise ValueError("committed_amount cannot exceed budget_amount")
+        return self
+
+
 class InvoiceLine(DomainModel):
     """Extracted invoice line; arithmetic discrepancies are evaluated later."""
 
