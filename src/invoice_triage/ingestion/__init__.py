@@ -6,6 +6,14 @@ from invoice_triage.ingestion.chunker import (
     embedding_text,
 )
 from invoice_triage.ingestion.parser import DocumentParseError, parse_markdown_document
+from invoice_triage.ingestion.invoice_records import (
+    InvoiceFixtureError,
+    InvoiceLoadResult,
+    discover_invoice_sources,
+    load_invoice_fixtures,
+    parse_invoice_record,
+    read_invoice_fixtures,
+)
 from invoice_triage.ingestion.pipeline import (
     DocumentIngestionError,
     DocumentIngestionResult,
@@ -27,14 +35,20 @@ __all__ = [
     "DocumentIngestionResult",
     "DocumentParseError",
     "FixtureValidationError",
+    "InvoiceFixtureError",
+    "InvoiceLoadResult",
     "StructuredLoadResult",
     "chunk_markdown_document",
     "discover_grounding_sources",
+    "discover_invoice_sources",
     "embedding_text",
     "ingest_grounding_documents",
     "load_structured_fixtures",
+    "load_invoice_fixtures",
     "parse_markdown_document",
+    "parse_invoice_record",
     "prepare_grounding_documents",
     "read_budget_fixtures",
+    "read_invoice_fixtures",
     "read_vendor_fixtures",
 ]

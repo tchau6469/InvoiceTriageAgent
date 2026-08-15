@@ -34,7 +34,7 @@ COPY scripts/ ./scripts/
 
 USER invoice-triage
 
-# The AgentCore entrypoint will be added when the agent runtime is implemented.
+# The local LangGraph entrypoint will be added when the workflow is implemented.
 # This target currently provides the reusable application execution environment.
 
 FROM base AS ingestion
@@ -55,7 +55,7 @@ FROM base AS test
 
 ENV PYTEST_ADDOPTS="-p no:cacheprovider"
 
-RUN python -m pip install ".[dev]"
+RUN python -m pip install ".[dev,mcp,reasoning]"
 
 COPY alembic.ini ./
 COPY fixtures/ ./fixtures/
@@ -65,3 +65,17 @@ COPY tests/ ./tests/
 USER invoice-triage
 
 CMD ["python", "-m", "pytest"]
+
+FROM base AS mcp
+
+RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cpu \
+    && python -m pip install ".[embeddings,mcp,reasoning]"
+
+COPY alembic.ini ./
+COPY fixtures/ ./fixtures/
+COPY migrations/ ./migrations/
+COPY scripts/ ./scripts/
+
+USER invoice-triage
+
+ENTRYPOINT ["invoice-triage-mcp"]

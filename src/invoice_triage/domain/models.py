@@ -9,6 +9,7 @@ from typing import Annotated, Self
 
 from pydantic import (
     BaseModel,
+    AwareDatetime,
     ConfigDict,
     Field,
     JsonValue,
@@ -94,6 +95,33 @@ class BudgetStatus(StrEnum):
     WITHIN_BUDGET = "within_budget"
     BUDGET_EXCEEDED = "budget_exceeded"
     COST_CENTER_MISMATCH = "cost_center_mismatch"
+
+
+class InvoiceRecordStatus(StrEnum):
+    """Operational state controlling duplicate and budget participation."""
+
+    PENDING_REVIEW = "pending_review"
+    COMMITTED = "committed"
+    REJECTED = "rejected"
+    VOIDED = "voided"
+
+
+class InvoiceIdentifierType(StrEnum):
+    """External references retained for exact duplicate detection."""
+
+    BILL_OF_LADING = "bill_of_lading"
+    TRACKING_NUMBER = "tracking_number"
+    PACKING_SLIP = "packing_slip"
+    PROOF_OF_DELIVERY = "proof_of_delivery"
+    PURCHASE_ORDER = "purchase_order"
+
+
+class DuplicateReason(StrEnum):
+    """Deterministic signals explaining a possible duplicate match."""
+
+    VENDOR_INVOICE_NUMBER = "vendor_invoice_number"
+    SERVICE_PERIOD_AMOUNT = "service_period_amount"
+    SHIPMENT_IDENTIFIER = "shipment_identifier"
 
 
 class SourceDocument(DomainModel):
@@ -266,6 +294,63 @@ class Invoice(DomainModel):
         return self
 
 
+class InvoiceIdentifier(DomainModel):
+    """One typed identifier extracted from an invoice input."""
+
+    identifier_type: InvoiceIdentifierType
+    value: NonEmptyString
+
+
+class PersistedInvoice(DomainModel):
+    """Normalized invoice fields required for operational checks."""
+
+    invoice_id: NonEmptyString
+    vendor_invoice_number: NonEmptyString
+    vendor_id: NonEmptyString
+    invoice_date: date
+    received_at: AwareDatetime
+    currency: CurrencyCode
+    total_due: NonNegativeDecimal
+    cost_center: NonEmptyString
+    record_status: InvoiceRecordStatus
+    service_period_start: date | None = None
+    service_period_end: date | None = None
+    identifiers: tuple[InvoiceIdentifier, ...] = ()
+    source_path: NonEmptyString
+    content_hash: Annotated[
+        str,
+        StringConstraints(pattern=r"^[0-9a-f]{64}$"),
+    ]
+
+    @model_validator(mode="after")
+    def validate_record(self) -> Self:
+        if (self.service_period_start is None) != (self.service_period_end is None):
+            raise ValueError(
+                "service_period_start and service_period_end must be provided together"
+            )
+        if (
+            self.service_period_start is not None
+            and self.service_period_end is not None
+            and self.service_period_end < self.service_period_start
+        ):
+            raise ValueError("service_period_end cannot precede service_period_start")
+        identifier_keys = {
+            (identifier.identifier_type, identifier.value.casefold())
+            for identifier in self.identifiers
+        }
+        if len(identifier_keys) != len(self.identifiers):
+            raise ValueError("invoice identifiers must be unique by type and value")
+        return self
+
+
+class InvoiceDuplicateMatch(DomainModel):
+    """One earlier invoice matching a deterministic duplicate signal."""
+
+    invoice: PersistedInvoice
+    reasons: tuple[DuplicateReason, ...] = Field(min_length=1)
+    matched_identifiers: tuple[InvoiceIdentifier, ...] = ()
+
+
 class RetrievalQuery(DomainModel):
     """Search request shared by vector, keyword, hybrid, and reranked modes."""
 
@@ -273,7 +358,7 @@ class RetrievalQuery(DomainModel):
     top_k: int = Field(default=5, ge=1, le=100)
     category: VendorCategory | None = None
     vendor_id: NonEmptyString | None = None
-    include_expired: bool = False
+    as_of_date: date | None = None
     metadata_filter: Metadata = Field(default_factory=dict)
 
 

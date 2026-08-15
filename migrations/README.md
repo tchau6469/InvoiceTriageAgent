@@ -23,3 +23,5 @@ python -m alembic history
 
 Autogeneration is intentionally disabled. New revisions should be reviewed and
 written explicitly for PostgreSQL and Amazon RDS compatibility.
+
+Current head: `0006_invoice_records`.

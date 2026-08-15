@@ -29,6 +29,9 @@ class EmbeddingClient(Protocol):
     def embed_query(self, text: str) -> list[float]:
         """Embed one instructed retrieval query."""
 
+    def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed instructed retrieval queries in a batch."""
+
 
 class Qwen3EmbeddingClient:
     """Local Sentence Transformers adapter for Qwen3-Embedding-0.6B."""
@@ -68,16 +71,23 @@ class Qwen3EmbeddingClient:
     def embed_query(self, text: str) -> list[float]:
         if not text.strip():
             raise ValueError("query text cannot be empty")
+        return self.embed_queries([text])[0]
+
+    def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        if any(not text.strip() for text in texts):
+            raise ValueError("query text cannot be empty")
         vectors = self._get_model().encode(
-            [text],
+            list(texts),
             prompt=f"Instruct: {AP_RETRIEVAL_INSTRUCTION}\nQuery:",
-            batch_size=1,
+            batch_size=self.batch_size,
             normalize_embeddings=True,
             truncate_dim=self.dimensions,
             convert_to_numpy=True,
             show_progress_bar=False,
         )
-        return self._validated_vectors(vectors.tolist(), expected=1)[0]
+        return self._validated_vectors(vectors.tolist(), expected=len(texts))
 
     def _get_model(self) -> Any:
         """Load weights only after source validation reaches embedding work."""
@@ -122,6 +132,9 @@ class DeterministicEmbeddingClient:
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed(f"query\0{AP_RETRIEVAL_INSTRUCTION}\0{text}")
+
+    def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self.embed_query(text) for text in texts]
 
     def _embed(self, text: str) -> list[float]:
         values: list[float] = []

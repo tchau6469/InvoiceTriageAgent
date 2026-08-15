@@ -51,7 +51,7 @@ def test_database_is_at_alembic_head(database: Database) -> None:
             "SELECT version_num FROM alembic_version"
         ).fetchone()
 
-    assert row == {"version_num": "0004_search_indexes"}
+    assert row == {"version_num": "0006_invoice_records"}
 
 
 def test_expected_tables_and_indexes_exist(database: Database) -> None:
@@ -65,7 +65,9 @@ def test_expected_tables_and_indexes_exist(database: Database) -> None:
                   'vendors',
                   'monthly_budgets',
                   'source_documents',
-                  'document_chunks'
+                  'document_chunks',
+                  'invoice_records',
+                  'invoice_identifiers'
               )
             """
         ).fetchall()
@@ -76,7 +78,10 @@ def test_expected_tables_and_indexes_exist(database: Database) -> None:
             WHERE schemaname = 'public'
               AND indexname IN (
                   'ix_document_chunks_search_vector_gin',
-                  'ix_document_chunks_embedding_hnsw'
+                  'ix_document_chunks_embedding_hnsw',
+                  'ix_invoice_records_vendor_number',
+                  'ix_invoice_records_budget_commitments',
+                  'ix_invoice_identifiers_lookup'
               )
             """
         ).fetchall()
@@ -86,10 +91,15 @@ def test_expected_tables_and_indexes_exist(database: Database) -> None:
         "monthly_budgets",
         "source_documents",
         "document_chunks",
+        "invoice_records",
+        "invoice_identifiers",
     }
     assert {row["indexname"] for row in indexes} == {
         "ix_document_chunks_search_vector_gin",
         "ix_document_chunks_embedding_hnsw",
+        "ix_invoice_records_vendor_number",
+        "ix_invoice_records_budget_commitments",
+        "ix_invoice_identifiers_lookup",
     }
 
 

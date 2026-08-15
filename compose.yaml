@@ -84,9 +84,31 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  load-invoices:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      INVOICE_TRIAGE_ENVIRONMENT: dev
+      INVOICE_TRIAGE_DATABASE_URL: postgresql://${POSTGRES_USER:-invoice_triage}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_triage}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - python -m alembic upgrade head && python scripts/load_structured_fixtures.py && python scripts/load_invoice_fixtures.py
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
   model-cache-init:
     profiles:
       - tools
+      - mcp
     image: pgvector/pgvector:0.8.2-pg17-bookworm
     user: "0:0"
     entrypoint: ["chown"]
@@ -123,6 +145,122 @@ services:
       - sh
       - -c
       - python -m alembic upgrade head && python scripts/ingest_grounding_documents.py
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  evaluate-retrieval:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ingestion
+    environment:
+      INVOICE_TRIAGE_ENVIRONMENT: dev
+      INVOICE_TRIAGE_DATABASE_URL: postgresql://${POSTGRES_USER:-invoice_triage}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_triage}
+      INVOICE_TRIAGE_EMBEDDING_MODEL_ID: ${INVOICE_TRIAGE_EMBEDDING_MODEL_ID:-Qwen/Qwen3-Embedding-0.6B}
+      INVOICE_TRIAGE_EMBEDDING_DIMENSIONS: ${INVOICE_TRIAGE_EMBEDDING_DIMENSIONS:-1024}
+      INVOICE_TRIAGE_EMBEDDING_DEVICE: ${INVOICE_TRIAGE_EMBEDDING_DEVICE:-cpu}
+      INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE: ${INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE:-8}
+      INVOICE_TRIAGE_RETRIEVAL_TOP_K: ${INVOICE_TRIAGE_RETRIEVAL_TOP_K:-5}
+      INVOICE_TRIAGE_VECTOR_CANDIDATES: ${INVOICE_TRIAGE_VECTOR_CANDIDATES:-20}
+      INVOICE_TRIAGE_KEYWORD_CANDIDATES: ${INVOICE_TRIAGE_KEYWORD_CANDIDATES:-20}
+      INVOICE_TRIAGE_RRF_K: ${INVOICE_TRIAGE_RRF_K:-60}
+      INVOICE_TRIAGE_RERANK_CANDIDATES: ${INVOICE_TRIAGE_RERANK_CANDIDATES:-10}
+      INVOICE_TRIAGE_RERANKER_MODEL_ID: ${INVOICE_TRIAGE_RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L6-v2}
+      INVOICE_TRIAGE_RERANKER_DEVICE: ${INVOICE_TRIAGE_RERANKER_DEVICE:-cpu}
+      INVOICE_TRIAGE_RERANKER_BATCH_SIZE: ${INVOICE_TRIAGE_RERANKER_BATCH_SIZE:-4}
+      INVOICE_TRIAGE_RERANKER_MAX_LENGTH: ${INVOICE_TRIAGE_RERANKER_MAX_LENGTH:-512}
+      HF_HOME: /home/invoice-triage/.cache/huggingface
+    volumes:
+      - huggingface-cache:/home/invoice-triage/.cache/huggingface
+    depends_on:
+      model-cache-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    entrypoint: ["python", "scripts/evaluate_retrieval.py"]
+    command: []
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  search:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ingestion
+    environment:
+      INVOICE_TRIAGE_ENVIRONMENT: dev
+      INVOICE_TRIAGE_DATABASE_URL: postgresql://${POSTGRES_USER:-invoice_triage}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_triage}
+      INVOICE_TRIAGE_EMBEDDING_MODEL_ID: ${INVOICE_TRIAGE_EMBEDDING_MODEL_ID:-Qwen/Qwen3-Embedding-0.6B}
+      INVOICE_TRIAGE_EMBEDDING_DIMENSIONS: ${INVOICE_TRIAGE_EMBEDDING_DIMENSIONS:-1024}
+      INVOICE_TRIAGE_EMBEDDING_DEVICE: ${INVOICE_TRIAGE_EMBEDDING_DEVICE:-cpu}
+      INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE: ${INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE:-8}
+      INVOICE_TRIAGE_RETRIEVAL_TOP_K: ${INVOICE_TRIAGE_RETRIEVAL_TOP_K:-5}
+      INVOICE_TRIAGE_VECTOR_CANDIDATES: ${INVOICE_TRIAGE_VECTOR_CANDIDATES:-20}
+      INVOICE_TRIAGE_KEYWORD_CANDIDATES: ${INVOICE_TRIAGE_KEYWORD_CANDIDATES:-20}
+      INVOICE_TRIAGE_RRF_K: ${INVOICE_TRIAGE_RRF_K:-60}
+      INVOICE_TRIAGE_RERANK_CANDIDATES: ${INVOICE_TRIAGE_RERANK_CANDIDATES:-10}
+      INVOICE_TRIAGE_RERANKER_MODEL_ID: ${INVOICE_TRIAGE_RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L6-v2}
+      INVOICE_TRIAGE_RERANKER_DEVICE: ${INVOICE_TRIAGE_RERANKER_DEVICE:-cpu}
+      INVOICE_TRIAGE_RERANKER_BATCH_SIZE: ${INVOICE_TRIAGE_RERANKER_BATCH_SIZE:-4}
+      INVOICE_TRIAGE_RERANKER_MAX_LENGTH: ${INVOICE_TRIAGE_RERANKER_MAX_LENGTH:-512}
+      HF_HOME: /home/invoice-triage/.cache/huggingface
+    volumes:
+      - huggingface-cache:/home/invoice-triage/.cache/huggingface
+    depends_on:
+      model-cache-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    entrypoint: ["invoice-triage-search"]
+    command: []
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  mcp-server:
+    profiles:
+      - mcp
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mcp
+    environment:
+      INVOICE_TRIAGE_ENVIRONMENT: dev
+      INVOICE_TRIAGE_DATABASE_URL: postgresql://${POSTGRES_USER:-invoice_triage}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_triage}
+      INVOICE_TRIAGE_EMBEDDING_MODEL_ID: ${INVOICE_TRIAGE_EMBEDDING_MODEL_ID:-Qwen/Qwen3-Embedding-0.6B}
+      INVOICE_TRIAGE_EMBEDDING_DIMENSIONS: ${INVOICE_TRIAGE_EMBEDDING_DIMENSIONS:-1024}
+      INVOICE_TRIAGE_EMBEDDING_DEVICE: ${INVOICE_TRIAGE_EMBEDDING_DEVICE:-cpu}
+      INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE: ${INVOICE_TRIAGE_EMBEDDING_BATCH_SIZE:-8}
+      INVOICE_TRIAGE_RETRIEVAL_TOP_K: ${INVOICE_TRIAGE_RETRIEVAL_TOP_K:-5}
+      INVOICE_TRIAGE_VECTOR_CANDIDATES: ${INVOICE_TRIAGE_VECTOR_CANDIDATES:-20}
+      INVOICE_TRIAGE_KEYWORD_CANDIDATES: ${INVOICE_TRIAGE_KEYWORD_CANDIDATES:-20}
+      INVOICE_TRIAGE_RRF_K: ${INVOICE_TRIAGE_RRF_K:-60}
+      INVOICE_TRIAGE_RERANK_CANDIDATES: ${INVOICE_TRIAGE_RERANK_CANDIDATES:-10}
+      INVOICE_TRIAGE_RERANKER_MODEL_ID: ${INVOICE_TRIAGE_RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L6-v2}
+      INVOICE_TRIAGE_RERANKER_DEVICE: ${INVOICE_TRIAGE_RERANKER_DEVICE:-cpu}
+      INVOICE_TRIAGE_RERANKER_BATCH_SIZE: ${INVOICE_TRIAGE_RERANKER_BATCH_SIZE:-4}
+      INVOICE_TRIAGE_RERANKER_MAX_LENGTH: ${INVOICE_TRIAGE_RERANKER_MAX_LENGTH:-512}
+      INVOICE_TRIAGE_REASONING_PROVIDER: ${INVOICE_TRIAGE_REASONING_PROVIDER:-gemini}
+      INVOICE_TRIAGE_REASONING_MODEL_ID: ${INVOICE_TRIAGE_REASONING_MODEL_ID:-gemini-3.5-flash}
+      INVOICE_TRIAGE_INVOICE_SOURCE_ROOT: ${INVOICE_TRIAGE_INVOICE_SOURCE_ROOT:-fixtures/invoices}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      HF_HOME: /home/invoice-triage/.cache/huggingface
+    volumes:
+      - huggingface-cache:/home/invoice-triage/.cache/huggingface
+    depends_on:
+      model-cache-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    stdin_open: true
+    command: []
     restart: "no"
     security_opt:
       - no-new-privileges:true

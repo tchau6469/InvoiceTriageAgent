@@ -17,13 +17,23 @@ dependencies = [
     "SQLAlchemy>=2.0,<2.1",
 ]
 
+[project.scripts]
+invoice-triage-search = "invoice_triage.cli.search:main"
+invoice-triage-mcp = "invoice_triage.mcp_server.server:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=9,<10",
 ]
 embeddings = [
-    "sentence-transformers>=5.1,<6",
+    "sentence-transformers>=5.7,<6",
     "transformers>=4.51,<6",
+]
+mcp = [
+    "fastmcp==3.4.4",
+]
+reasoning = [
+    "google-genai>=2,<3",
 ]
 
 [tool.setuptools.packages.find]

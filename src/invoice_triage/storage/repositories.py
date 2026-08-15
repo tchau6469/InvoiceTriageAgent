@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+from decimal import Decimal
 import hashlib
 from typing import Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from invoice_triage.domain import DocumentChunk, MonthlyBudget, SourceDocument, Vendor, VendorContact
+from invoice_triage.domain import (
+    DocumentChunk,
+    DuplicateReason,
+    InvoiceDuplicateMatch,
+    InvoiceIdentifier,
+    MonthlyBudget,
+    PersistedInvoice,
+    SourceDocument,
+    Vendor,
+    VendorContact,
+)
 
 
 class VendorRepository:
@@ -272,6 +283,361 @@ class BudgetRepository:
             committed_amount=row["committed_amount"],
             currency=row["currency"],
             owner=row["owner"],
+        )
+
+
+class InvoiceRepository:
+    """Persist normalized invoices and perform deterministic operational checks."""
+
+    _SHIPMENT_IDENTIFIER_TYPES = (
+        "bill_of_lading",
+        "tracking_number",
+        "packing_slip",
+        "proof_of_delivery",
+    )
+
+    def upsert_many(
+        self,
+        connection: Connection[dict[str, Any]],
+        invoices: Sequence[PersistedInvoice],
+    ) -> tuple[int, int]:
+        """Atomically replace invoice records and their typed identifiers."""
+
+        if not invoices:
+            return 0, 0
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO invoice_records (
+                    invoice_id,
+                    vendor_invoice_number,
+                    vendor_id,
+                    invoice_date,
+                    received_at,
+                    currency,
+                    total_due,
+                    cost_center,
+                    record_status,
+                    service_period_start,
+                    service_period_end,
+                    source_path,
+                    content_hash
+                ) VALUES (
+                    %(invoice_id)s,
+                    %(vendor_invoice_number)s,
+                    %(vendor_id)s,
+                    %(invoice_date)s,
+                    %(received_at)s,
+                    %(currency)s,
+                    %(total_due)s,
+                    %(cost_center)s,
+                    %(record_status)s,
+                    %(service_period_start)s,
+                    %(service_period_end)s,
+                    %(source_path)s,
+                    %(content_hash)s
+                )
+                ON CONFLICT (invoice_id) DO UPDATE SET
+                    vendor_invoice_number = EXCLUDED.vendor_invoice_number,
+                    vendor_id = EXCLUDED.vendor_id,
+                    invoice_date = EXCLUDED.invoice_date,
+                    received_at = EXCLUDED.received_at,
+                    currency = EXCLUDED.currency,
+                    total_due = EXCLUDED.total_due,
+                    cost_center = EXCLUDED.cost_center,
+                    record_status = EXCLUDED.record_status,
+                    service_period_start = EXCLUDED.service_period_start,
+                    service_period_end = EXCLUDED.service_period_end,
+                    source_path = EXCLUDED.source_path,
+                    content_hash = EXCLUDED.content_hash,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [self._parameters(invoice) for invoice in invoices],
+            )
+
+        invoice_ids = [invoice.invoice_id for invoice in invoices]
+        connection.execute(
+            "DELETE FROM invoice_identifiers WHERE invoice_id = ANY(%s)",
+            (invoice_ids,),
+        )
+        identifier_rows = [
+            {
+                "invoice_id": invoice.invoice_id,
+                "identifier_type": identifier.identifier_type.value,
+                "identifier_value": identifier.value,
+            }
+            for invoice in invoices
+            for identifier in invoice.identifiers
+        ]
+        if identifier_rows:
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO invoice_identifiers (
+                        invoice_id,
+                        identifier_type,
+                        identifier_value
+                    ) VALUES (
+                        %(invoice_id)s,
+                        %(identifier_type)s,
+                        %(identifier_value)s
+                    )
+                    """,
+                    identifier_rows,
+                )
+        return len(invoices), len(identifier_rows)
+
+    def get_by_id(
+        self,
+        connection: Connection[dict[str, Any]],
+        invoice_id: str,
+    ) -> PersistedInvoice | None:
+        row = connection.execute(
+            "SELECT * FROM invoice_records WHERE invoice_id = %s",
+            (invoice_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._from_row(row, self._identifiers(connection, invoice_id))
+
+    def find_duplicate_matches(
+        self,
+        connection: Connection[dict[str, Any]],
+        candidate: PersistedInvoice,
+    ) -> tuple[InvoiceDuplicateMatch, ...]:
+        """Find earlier active records sharing an exact duplicate signal."""
+
+        rows = connection.execute(
+            """
+            SELECT
+                other.*,
+                (
+                    other.vendor_id = %(vendor_id)s
+                    AND lower(other.vendor_invoice_number) =
+                        lower(%(vendor_invoice_number)s)
+                ) AS vendor_number_match,
+                (
+                    %(service_period_start)s::date IS NOT NULL
+                    AND other.vendor_id = %(vendor_id)s
+                    AND other.currency = %(currency)s
+                    AND other.total_due = %(total_due)s
+                    AND other.service_period_start = %(service_period_start)s::date
+                    AND other.service_period_end = %(service_period_end)s::date
+                ) AS service_amount_match
+            FROM invoice_records AS other
+            WHERE other.invoice_id <> %(invoice_id)s
+              AND other.record_status IN ('pending_review', 'committed')
+              AND (
+                    other.received_at < %(received_at)s
+                    OR (
+                        other.received_at = %(received_at)s
+                        AND other.invoice_id < %(invoice_id)s
+                    )
+              )
+              AND (
+                    (
+                        other.vendor_id = %(vendor_id)s
+                        AND lower(other.vendor_invoice_number) =
+                            lower(%(vendor_invoice_number)s)
+                    )
+                    OR (
+                        %(service_period_start)s::date IS NOT NULL
+                        AND other.vendor_id = %(vendor_id)s
+                        AND other.currency = %(currency)s
+                        AND other.total_due = %(total_due)s
+                        AND other.service_period_start =
+                            %(service_period_start)s::date
+                        AND other.service_period_end = %(service_period_end)s::date
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM invoice_identifiers AS candidate_identifier
+                        JOIN invoice_identifiers AS other_identifier
+                          ON other_identifier.identifier_type =
+                                candidate_identifier.identifier_type
+                         AND lower(other_identifier.identifier_value) =
+                                lower(candidate_identifier.identifier_value)
+                        WHERE candidate_identifier.invoice_id = %(invoice_id)s
+                          AND other_identifier.invoice_id = other.invoice_id
+                          AND candidate_identifier.identifier_type = ANY(
+                                %(shipment_identifier_types)s::text[]
+                          )
+                    )
+              )
+            ORDER BY other.received_at, other.invoice_id
+            """,
+            {
+                **self._parameters(candidate),
+                "shipment_identifier_types": list(self._SHIPMENT_IDENTIFIER_TYPES),
+            },
+        ).fetchall()
+
+        matches: list[InvoiceDuplicateMatch] = []
+        for row in rows:
+            matched_identifiers = self._shared_shipment_identifiers(
+                connection,
+                candidate.invoice_id,
+                row["invoice_id"],
+            )
+            reasons: list[DuplicateReason] = []
+            if row["vendor_number_match"]:
+                reasons.append(DuplicateReason.VENDOR_INVOICE_NUMBER)
+            if row["service_amount_match"]:
+                reasons.append(DuplicateReason.SERVICE_PERIOD_AMOUNT)
+            if matched_identifiers:
+                reasons.append(DuplicateReason.SHIPMENT_IDENTIFIER)
+            matches.append(
+                InvoiceDuplicateMatch(
+                    invoice=self._from_row(
+                        row,
+                        self._identifiers(connection, row["invoice_id"]),
+                    ),
+                    reasons=tuple(reasons),
+                    matched_identifiers=matched_identifiers,
+                )
+            )
+        return tuple(matches)
+
+    def sum_committed_for_budget(
+        self,
+        connection: Connection[dict[str, Any]],
+        *,
+        budget_period: date,
+        category: str,
+        cost_center: str,
+        currency: str,
+        exclude_invoice_id: str | None = None,
+    ) -> Decimal:
+        """Sum persisted committed invoices in one monthly budget scope."""
+
+        row = connection.execute(
+            """
+            SELECT COALESCE(sum(invoice.total_due), 0) AS committed_total
+            FROM invoice_records AS invoice
+            JOIN vendors AS vendor ON vendor.vendor_id = invoice.vendor_id
+            WHERE invoice.record_status = 'committed'
+              AND invoice.invoice_date >= %(budget_period)s
+              AND invoice.invoice_date < %(budget_period)s + INTERVAL '1 month'
+              AND vendor.category = %(category)s
+              AND invoice.cost_center = %(cost_center)s
+              AND invoice.currency = %(currency)s
+              AND (
+                    %(exclude)s::text IS NULL
+                    OR invoice.invoice_id <> %(exclude)s
+              )
+            """,
+            {
+                "budget_period": budget_period,
+                "category": category,
+                "cost_center": cost_center,
+                "currency": currency,
+                "exclude": exclude_invoice_id,
+            },
+        ).fetchone()
+        assert row is not None
+        return Decimal(row["committed_total"])
+
+    def count(self, connection: Connection[dict[str, Any]]) -> int:
+        row = connection.execute(
+            "SELECT count(*) AS count FROM invoice_records"
+        ).fetchone()
+        assert row is not None
+        return row["count"]
+
+    @staticmethod
+    def _parameters(invoice: PersistedInvoice) -> dict[str, Any]:
+        return {
+            "invoice_id": invoice.invoice_id,
+            "vendor_invoice_number": invoice.vendor_invoice_number,
+            "vendor_id": invoice.vendor_id,
+            "invoice_date": invoice.invoice_date,
+            "received_at": invoice.received_at,
+            "currency": invoice.currency,
+            "total_due": invoice.total_due,
+            "cost_center": invoice.cost_center,
+            "record_status": invoice.record_status.value,
+            "service_period_start": invoice.service_period_start,
+            "service_period_end": invoice.service_period_end,
+            "source_path": invoice.source_path,
+            "content_hash": invoice.content_hash,
+        }
+
+    @staticmethod
+    def _from_row(
+        row: dict[str, Any],
+        identifiers: tuple[InvoiceIdentifier, ...],
+    ) -> PersistedInvoice:
+        return PersistedInvoice(
+            invoice_id=row["invoice_id"],
+            vendor_invoice_number=row["vendor_invoice_number"],
+            vendor_id=row["vendor_id"],
+            invoice_date=row["invoice_date"],
+            received_at=row["received_at"],
+            currency=row["currency"],
+            total_due=row["total_due"],
+            cost_center=row["cost_center"],
+            record_status=row["record_status"],
+            service_period_start=row["service_period_start"],
+            service_period_end=row["service_period_end"],
+            identifiers=identifiers,
+            source_path=row["source_path"],
+            content_hash=row["content_hash"],
+        )
+
+    @staticmethod
+    def _identifiers(
+        connection: Connection[dict[str, Any]],
+        invoice_id: str,
+    ) -> tuple[InvoiceIdentifier, ...]:
+        rows = connection.execute(
+            """
+            SELECT identifier_type, identifier_value
+            FROM invoice_identifiers
+            WHERE invoice_id = %s
+            ORDER BY identifier_type, identifier_value
+            """,
+            (invoice_id,),
+        ).fetchall()
+        return tuple(
+            InvoiceIdentifier(
+                identifier_type=row["identifier_type"],
+                value=row["identifier_value"],
+            )
+            for row in rows
+        )
+
+    def _shared_shipment_identifiers(
+        self,
+        connection: Connection[dict[str, Any]],
+        candidate_invoice_id: str,
+        other_invoice_id: str,
+    ) -> tuple[InvoiceIdentifier, ...]:
+        rows = connection.execute(
+            """
+            SELECT
+                candidate.identifier_type,
+                candidate.identifier_value
+            FROM invoice_identifiers AS candidate
+            JOIN invoice_identifiers AS other
+              ON other.identifier_type = candidate.identifier_type
+             AND lower(other.identifier_value) = lower(candidate.identifier_value)
+            WHERE candidate.invoice_id = %s
+              AND other.invoice_id = %s
+              AND candidate.identifier_type = ANY(%s::text[])
+            ORDER BY candidate.identifier_type, candidate.identifier_value
+            """,
+            (
+                candidate_invoice_id,
+                other_invoice_id,
+                list(self._SHIPMENT_IDENTIFIER_TYPES),
+            ),
+        ).fetchall()
+        return tuple(
+            InvoiceIdentifier(
+                identifier_type=row["identifier_type"],
+                value=row["identifier_value"],
+            )
+            for row in rows
         )
 
 
